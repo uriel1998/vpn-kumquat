@@ -1,0 +1,42 @@
+#!/bin/bash
+
+#works with wicd
+openvpn=$(pgrep openvpn > /dev/null && echo "vpn")
+dnscrypt=$(pgrep dnscrypt-proxy > /dev/null && echo "dns")
+
+if [ "$1" == "start" ]; then
+	#connected to the internet
+	ext_ip=$(tail /tmp/netup | awk '{ print $1 }')
+	if [ "$ext_ip" != "0.0.0.0" ]; then
+		#connect to the vpn
+		if [ "$openvpn" != "vpn" ]; then
+			sudo openvpn --config /YOUR/PATH/TO/CONF/blackvpn/TV-USA-East.conf --daemon
+		fi
+		#connect to dns proxy		
+		if [ "$dnscrypt" != "dns" ]; then
+			sudo cp /YOUR/PATH/TO/CONF/resolv_dnscrypt.conf /etc/resolv.conf
+			sudo cp /YOUR/PATH/TO/CONF/resolv_dnscrypt.conf /var/spool/postfix/etc/resolv.conf
+			sudo postfix stop
+			sudo postfix start
+			sudo dnscrypt-proxy --logfile=/var/log/syslog --daemonize
+		fi		
+	fi
+elif [ "$1" = "stop" ]; then
+	killproxy=$(pgrep dnscrypt-proxy)	
+	if [ "$killproxy" != "" ]; then
+		sudo kill $killproxy
+		sudo cp /YOUR/PATH/TO/CONF/resolv.conf /etc/resolv.conf
+		sudo cp /YOUR/PATH/TO/CONF/resolv.conf /var/spool/postfix/etc/resolv.conf
+		sudo postfix stop
+		sudo postfix start
+	fi
+	killvpn=$(pgrep openvpn)
+	if [ "$killvpn" != "" ]; then
+		sudo kill $killvpn
+	fi
+else
+	echo "Usage:  privacy [start|stop]"
+	echo "Starts default openvpn and dnsproxy applications."
+fi
+
+inettest
