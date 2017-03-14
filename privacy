@@ -1,42 +1,149 @@
 #!/bin/bash
 
-#works with wicd
-openvpn=$(pgrep openvpn > /dev/null && echo "vpn")
-dnscrypt=$(pgrep dnscrypt-proxy > /dev/null && echo "dns")
+########################################################################
+# Declarations
+########################################################################
 
-if [ "$1" == "start" ]; then
-	#connected to the internet
-	ext_ip=$(tail /tmp/netup | awk '{ print $1 }')
-	if [ "$ext_ip" != "0.0.0.0" ]; then
-		#connect to the vpn
-		if [ "$openvpn" != "vpn" ]; then
-			sudo openvpn --config /YOUR/PATH/TO/CONF/blackvpn/TV-USA-East.conf --daemon
+External_IP=$(curl --silent ipecho.net/plain)
+OpenVPNStatus=$(pgrep -x openvpn > /dev/null && echo "vpn")
+DNScryptStatus=$(pgrep dnscrypt-proxy > /dev/null && echo "dns")
+NetworkManager=$(pgrep -x NetworkManager > /dev/null && echo "NM")
+
+DNSProcess=0
+VPNProcess=0
+DNSStop=0
+VPNStop=0
+
+# For Backups of things - I use a directory in "home" where I also keep
+# the OpenVPN conf files.
+ResolvConfDir="/home/USER/safe/crypted"
+
+########################################################################
+# Parsing parameters
+########################################################################
+
+if [[ "$@" =~ "help" ]]; then
+	echo "Usage:  privacy [start | stop ]"
+	echo "Starts default openvpn and dnsproxy applications at the same time."
+	echo "Usage:  privacy [vpn | dns | vpnstop | dnsstop ]"
+	echo "Naming just one service defaults to starting that service."
+	echo " "
+	echo "Many parts of this may require sudo privileges. Or accessing passwords does." 
+	echo "Edit your SUDOERS file at your own risk."
+	exit
+elif [[ "$@" =~ "start" ]]; then
+	VPNProcess=1
+	DNSProcess=1
+elif [[ "$@" =~ "vpn" ]]; then
+	VPNProcess=1
+elif [[ "$@" =~ "dns" ]]; then
+	DNSProcess=1	
+elif [[ "$@" =~ "vpnstop" ]]; then
+	VPNStop=1
+	VPNProcess=0
+elif [[ "$@" =~ "dnsstop" ]]; then
+	DNSStop=1
+	DNSProcess=0	
+elif [[ "$@" =~ "stop" ]]; then
+	VPNStop=1
+	DNSStop=1
+	DNSProcess=0
+	VPNProcess=0
+fi
+
+########################################################################
+# Getting NMCLI information if you use Network Manager instead of WICD
+########################################################################
+
+# Changed the fields from NMCLI so that extra spaces don't jack us over.
+# Currently set up to return the first VPN that shows up.
+if [[ "$NetworkManager" == "NM" ]]; then
+	vpnname=$(nmcli -f type,name con show | grep vpn | head -1 | awk '{print substr($0, index($0, $2))}'|awk '{$1=$1}1') 
+
+	# Sanity check.
+	numvpns=$(nmcli -f type,uuid,name con show | grep vpn -c)
+	if [ $numvpns -gt 1 ]; then
+		echo "You have more than one VPN configured. We are using $vpnname."
+	elif [ $numvpns = 0 ]; then
+		echo "You have no VPNs configured in Network Manager. Fix that first."
+		exit
+	fi
+fi
+
+
+########################################################################
+# Control Block for OpenVPN
+########################################################################
+
+
+
+if [[ "$VPNProcess" == "1" ]]; then
+	if [[ "$OpenVPNStatus" != "vpn" ]]; then
+		echo "Starting OpenVPN"
+		if [[ "$NetworkManager" == "NM" ]]; then
+			vpnname=$(nmcli -f type,name con show | grep vpn | head -1 | awk '{print substr($0, index($0, $2))}'|awk '{$1=$1}1') 
+
+			# Sanity check.
+			numvpns=$(nmcli -f type,uuid,name con show | grep vpn -c)
+			if [ $numvpns -gt 1 ]; then
+				echo "You have more than one VPN configured. We are using $vpnname."
+			elif [ $numvpns = 0 ]; then
+				echo "You have no VPNs configured in Network Manager. Fix that first."
+				exit
+			fi
+			nmcli con up "$vpnname"
+		else
+			sudo openvpn --config /home/USER/safe/crypted/PIA/US\ Midwest.ovpn --daemon
 		fi
-		#connect to dns proxy		
-		if [ "$dnscrypt" != "dns" ]; then
-			sudo cp /YOUR/PATH/TO/CONF/resolv_dnscrypt.conf /etc/resolv.conf
-			sudo cp /YOUR/PATH/TO/CONF/resolv_dnscrypt.conf /var/spool/postfix/etc/resolv.conf
+	fi
+elif [[ "$VPNStop" == "1" ]];	 then
+	echo "Stopping VPN"
+	if [[ "$NetworkManager" == "NM" ]]; then
+		# Sanity check.
+		numvpns=$(nmcli -f type,uuid,name con show -a | grep vpn -c)
+		if [ $numvpns = 0 ]; then
+			echo "There are no active VPNs."
+		else
+			vpnname=$(nmcli -f type,name con show -a | grep vpn | head -1 | awk '{print substr($0, index($0, $2))}'|awk '{$1=$1}1') 
+			nmcli con down "$vpnname"
+		fi
+	else
+
+		killvpn=$(pgrep -x openvpn)
+		if [[ "$killvpn" != "" ]]; then
+			sudo kill $killvpn
+		fi
+	fi	
+fi
+
+########################################################################
+# Control Block for DNSCrypt
+########################################################################
+
+
+if [[ "$DNSProcess" == "1" ]]; then
+	if [[ "$DNSCryptStatus" != "dns" ]]; then
+		echo "Starting DNSCrypt"
+		if [[ -d "$ResolvConfDir" ]]; then
+			cat /etc/resolv.conf > "$ResolvConfDir"/EtcResolvConf.bak
+			echo "nameserver 127.0.0.1" > "$ResolvConfDir"/resolve.conf
+			sudo cp "$ResolvConfDir"/resolve.conf /etc/resolv.conf
+			cat /var/spool/postfix/etc/resolv.conf > "$ResolvConfDir"/PostfixResolvConf.bak
+			sudo cp "$ResolvConfDir"/resolve.conf /var/spool/postfix/etc/resolv.conf
 			sudo postfix stop
 			sudo postfix start
-			sudo dnscrypt-proxy --logfile=/var/log/syslog --daemonize
-		fi		
-	fi
-elif [ "$1" = "stop" ]; then
+			sudo dnscrypt-proxy --logfile=/var/log/syslog --daemonize --resolver-name=cisco
+		fi
+	fi		
+elif [[ "$DNSStop" == "1" ]]; then
+	echo "Stopping DNSCrypt"
 	killproxy=$(pgrep dnscrypt-proxy)	
-	if [ "$killproxy" != "" ]; then
+	if [[ "$killproxy" != "" ]]; then
 		sudo kill $killproxy
-		sudo cp /YOUR/PATH/TO/CONF/resolv.conf /etc/resolv.conf
-		sudo cp /YOUR/PATH/TO/CONF/resolv.conf /var/spool/postfix/etc/resolv.conf
+		sudo cp "$ResolvConfDir"/EtcResolvConf.bak /etc/resolv.conf
+		sudo cp "$ResolvConfDir"/PostfixResolvConf.bak /var/spool/postfix/etc/resolv.conf
 		sudo postfix stop
 		sudo postfix start
 	fi
-	killvpn=$(pgrep openvpn)
-	if [ "$killvpn" != "" ]; then
-		sudo kill $killvpn
-	fi
-else
-	echo "Usage:  privacy [start|stop]"
-	echo "Starts default openvpn and dnsproxy applications."
 fi
 
-inettest
